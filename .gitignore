@@ -1,0 +1,7 @@
+crm.exe
+databases/leads.db
+databases/mail-credentials.db
+.env
+web/build/
+web/.svelte-kit/
+web/node_modules/
