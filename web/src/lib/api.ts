@@ -38,6 +38,13 @@ export interface Stats {
   recent: Lead[];
 }
 
+export interface PaginatedLeads {
+  data: Lead[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 export const tiers: Record<string, string> = {
   '1': 'VC', '2': 'Corporate', '3': 'Local',
   '4': 'Grant', '5': 'Venue', '6': 'Media',
@@ -59,7 +66,7 @@ export function getStats(): Promise<Stats> {
   return fetchJson('/stats');
 }
 
-export function getLeads(filters?: Record<string, string>): Promise<Lead[]> {
+export function getLeads(filters?: Record<string, string>): Promise<PaginatedLeads> {
   const params = new URLSearchParams(filters || {}).toString();
   return fetchJson(`/leads${params ? '?' + params : ''}`);
 }
@@ -97,6 +104,30 @@ export function logOutreach(leadId: string, activityType: string, notes: string,
 
 export function getFollowups(): Promise<Lead[]> {
   return fetchJson('/followups');
+}
+
+export function sendBulkEmail(emails: string[], subject: string, body: string): Promise<{ sent: number; bcc: string[] }> {
+  return fetchJson('/send-email', {
+    method: 'POST',
+    body: JSON.stringify({ emails, subject, body }),
+  });
+}
+
+export function exportLeadsCSV(ids: string[]): Promise<void> {
+  return fetch(`${BASE}/leads/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  }).then(async (res) => {
+    if (!res.ok) throw new Error('Export failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'leads-export.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
 }
 
 export function statusColor(status: string): string {

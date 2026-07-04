@@ -221,18 +221,18 @@ func cmdList() {
 	if t := getFlag("type"); t != "" {
 		filters["type"] = t
 	}
-	leads, err := db.GetLeads(filters)
+	result, err := db.GetLeads(filters)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return
 	}
-	if len(leads) == 0 {
+	if len(result.Data) == 0 {
 		fmt.Println("No leads found.")
 		return
 	}
-	fmt.Printf("\n%d lead(s):\n\n", len(leads))
+	fmt.Printf("\n%d lead(s):\n\n", len(result.Data))
 	verbose := hasFlag("verbose") || hasFlag("v")
-	for _, l := range leads {
+	for _, l := range result.Data {
 		printLead(l, verbose)
 	}
 }
@@ -434,14 +434,14 @@ func cmdLog() {
 }
 
 func cmdFollowups() {
-	leads, err := db.GetLeads(map[string]string{"status": "active"})
+	res, err := db.GetLeads(map[string]string{"status": "active"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return
 	}
 	today := time.Now().Format("2006-01-02")
 	var due []db.Lead
-	for _, l := range leads {
+	for _, l := range res.Data {
 		if l.NextActionDate != "" && l.NextActionDate <= today {
 			due = append(due, l)
 		}
@@ -479,12 +479,12 @@ func cmdExport() {
 	if path == "" {
 		path = "leads-export.csv"
 	}
-	leads, err := db.GetLeads(map[string]string{})
+	res, err := db.GetLeads(map[string]string{"limit": "99999"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return
 	}
-	if len(leads) == 0 {
+	if len(res.Data) == 0 {
 		return
 	}
 	f, err := os.Create(path)
@@ -497,14 +497,14 @@ func cmdExport() {
 		"tier", "type", "vertical", "check_size", "pitch_angle", "status",
 		"next_action", "next_action_date", "notes", "source", "created_at", "updated_at"}
 	writeCSVLine(f, headers)
-	for _, l := range leads {
+	for _, l := range res.Data {
 		writeCSVLine(f, []string{
 			l.ID, l.Company, l.ContactName, l.Email, l.Phone, l.Website,
 			l.Tier, l.Type, l.Vertical, l.CheckSize, l.PitchAngle, l.Status,
 			l.NextAction, l.NextActionDate, l.Notes, l.Source, l.CreatedAt, l.UpdatedAt,
 		})
 	}
-	fmt.Printf("Exported %d leads to %s\n", len(leads), path)
+	fmt.Printf("Exported %d leads to %s\n", len(res.Data), path)
 }
 
 func writeCSVLine(f *os.File, vals []string) {
@@ -528,10 +528,6 @@ func cmdServe() {
 	app := fiber.New(fiber.Config{AppName: "WaterParty CRM API"})
 	app.Use(cors.New())
 	app.Use(logger.New())
-
-	app.Static("/", "./web/build", fiber.Static{
-		Index: "index.html",
-	})
 
 	api := app.Group("/api")
 
@@ -560,14 +556,17 @@ func cmdServe() {
 		if t := c.Query("type"); t != "" {
 			filters["type"] = t
 		}
-		leads, err := db.GetLeads(filters)
+		if p := c.Query("page"); p != "" {
+			filters["page"] = p
+		}
+		if l := c.Query("limit"); l != "" {
+			filters["limit"] = l
+		}
+		result, err := db.GetLeads(filters)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}
-		if leads == nil {
-			leads = []db.Lead{}
-		}
-		return c.JSON(leads)
+		return c.JSON(result)
 	})
 
 	api.Get("/leads/:id", func(c *fiber.Ctx) error {
@@ -589,9 +588,19 @@ func cmdServe() {
 		if data.Company == "" {
 			return c.Status(400).JSON(fiber.Map{"error": "company is required"})
 		}
+		if data.Tier == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "tier is required"})
+		}
+		if data.Type == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "type is required"})
+		}
 		id, err := db.AddLead(data)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+			msg := err.Error()
+			if strings.Contains(msg, "already exists") {
+				return c.Status(409).JSON(fiber.Map{"error": msg})
+			}
+			return c.Status(500).JSON(fiber.Map{"error": msg})
 		}
 		data.ID = id
 		return c.Status(201).JSON(data)
@@ -677,13 +686,13 @@ func cmdServe() {
 	})
 
 	api.Get("/followups", func(c *fiber.Ctx) error {
-		leads, err := db.GetLeads(map[string]string{"status": "active"})
+		res, err := db.GetLeads(map[string]string{"status": "active", "limit": "99999"})
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		}
 		today := time.Now().Format("2006-01-02")
 		var due []db.Lead
-		for _, l := range leads {
+		for _, l := range res.Data {
 			if l.NextActionDate != "" && l.NextActionDate <= today {
 				due = append(due, l)
 			}
@@ -694,13 +703,84 @@ func cmdServe() {
 		return c.JSON(due)
 	})
 
-	app.Use(func(c *fiber.Ctx) error {
-		path := c.Path()
-		if len(path) < 4 || path[:4] != "/api" {
-			c.Set("Content-Type", "text/html; charset=utf-8")
-			return c.SendFile("./web/build/index.html")
+	api.Post("/send-email", func(c *fiber.Ctx) error {
+		var body struct {
+			Emails  []string `json:"emails"`
+			Subject string   `json:"subject"`
+			Body    string   `json:"body"`
 		}
-		return c.Next()
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
+		if len(body.Emails) == 0 {
+			return c.Status(400).JSON(fiber.Map{"error": "at least one recipient required"})
+		}
+		if body.Subject == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "subject is required"})
+		}
+		if body.Body == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "body is required"})
+		}
+		var invalid []string
+		for _, e := range body.Emails {
+			if !validateEmail(e) {
+				invalid = append(invalid, e)
+			}
+		}
+		if len(invalid) > 0 {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid emails: " + strings.Join(invalid, ", ")})
+		}
+		go sendEmail(body.Emails, body.Subject, body.Body, "John Victor @ WaterParty", nil, false)
+		return c.JSON(fiber.Map{"sent": len(body.Emails), "bcc": body.Emails})
+	})
+
+	api.Post("/leads/export", func(c *fiber.Ctx) error {
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
+		c.Set("Content-Type", "text/csv")
+		c.Set("Content-Disposition", "attachment; filename=leads-export.csv")
+		c.Write([]byte("id,company,contact_name,email,phone,website,tier,type,vertical,check_size,pitch_angle,status,next_action,next_action_date,notes,source,created_at,updated_at\r\n"))
+		for _, id := range body.IDs {
+			l, err := db.GetLead(id)
+			if err != nil || l == nil {
+				continue
+			}
+			vals := []string{l.ID, l.Company, l.ContactName, l.Email, l.Phone, l.Website,
+				l.Tier, l.Type, l.Vertical, l.CheckSize, l.PitchAngle, l.Status,
+				l.NextAction, l.NextActionDate, l.Notes, l.Source, l.CreatedAt, l.UpdatedAt}
+			line := ""
+			for i, v := range vals {
+				if i > 0 {
+					line += ","
+				}
+				if strings.ContainsAny(v, ",\"\n\r") {
+					line += "\"" + strings.ReplaceAll(v, "\"", "\"\"") + "\""
+				} else {
+					line += v
+				}
+			}
+			c.Write([]byte(line + "\r\n"))
+		}
+		return nil
+	})
+
+	app.Use(func(c *fiber.Ctx) error {
+		p := c.Path()
+		if len(p) >= 4 && p[:4] == "/api" {
+			return c.Next()
+		}
+		filePath := "./web/build" + p
+		if p == "/" {
+			filePath = "./web/build/index.html"
+		}
+		if _, err := os.Stat(filePath); err == nil {
+			return c.SendFile(filePath)
+		}
+		return c.SendFile("./web/build/index.html")
 	})
 
 	port := ":8080"

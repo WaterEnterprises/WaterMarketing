@@ -77,13 +77,13 @@ func InitDB() error {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS leads (
 			id TEXT PRIMARY KEY,
-			company TEXT NOT NULL,
+			company TEXT NOT NULL UNIQUE,
 			contact_name TEXT DEFAULT '',
 			email TEXT DEFAULT '',
 			phone TEXT DEFAULT '',
 			website TEXT DEFAULT '',
-			tier TEXT DEFAULT '3',
-			type TEXT DEFAULT '',
+			tier TEXT NOT NULL DEFAULT '3',
+			type TEXT NOT NULL DEFAULT '',
 			vertical TEXT DEFAULT '',
 			check_size TEXT DEFAULT '',
 			pitch_angle TEXT DEFAULT '',
@@ -103,7 +103,12 @@ func InitDB() error {
 			outcome TEXT DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT (datetime('now'))
 		);`)
-	return err
+	if err != nil {
+		return err
+	}
+	// add UNIQUE index on company if table already existed without it
+	db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_company ON leads(company)")
+	return nil
 }
 
 type Lead struct {
@@ -154,6 +159,13 @@ type StatusCount struct {
 	Count  int    `json:"count"`
 }
 
+type PaginatedLeads struct {
+	Data  []Lead `json:"data"`
+	Total int    `json:"total"`
+	Page  int    `json:"page"`
+	Limit int    `json:"limit"`
+}
+
 func uuid() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -200,6 +212,15 @@ func scanOutreach(rows *sql.Rows) ([]OutreachEntry, error) {
 }
 
 func AddLead(data Lead) (string, error) {
+	if data.Company == "" {
+		return "", fmt.Errorf("company is required")
+	}
+	if data.Tier == "" {
+		return "", fmt.Errorf("tier is required")
+	}
+	if data.Type == "" {
+		return "", fmt.Errorf("type is required")
+	}
 	id := uuid()
 	db, err := GetDB()
 	if err != nil {
@@ -216,15 +237,18 @@ func AddLead(data Lead) (string, error) {
 		data.PitchAngle, data.Status, data.NextAction, data.NextActionDate,
 		data.Notes, data.Source)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return "", fmt.Errorf("a lead with company '%s' already exists", data.Company)
+		}
 		return "", err
 	}
 	return id, nil
 }
 
-func GetLeads(filters map[string]string) ([]Lead, error) {
+func GetLeads(filters map[string]string) (PaginatedLeads, error) {
 	db, err := GetDB()
 	if err != nil {
-		return nil, err
+		return PaginatedLeads{}, err
 	}
 	defer db.Close()
 
@@ -262,12 +286,40 @@ func GetLeads(filters map[string]string) ([]Lead, error) {
 		where = "WHERE " + strings.Join(clauses, " AND ")
 	}
 
-	rows, err := db.Query("SELECT * FROM leads "+where+" ORDER BY updated_at DESC", params...)
+	page := 1
+	limit := 50
+	if p, ok := filters["page"]; ok && p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if l, ok := filters["limit"]; ok && l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 50
+	}
+	offset := (page - 1) * limit
+
+	var total int
+	countQuery := "SELECT COUNT(*) FROM leads " + where
+	db.QueryRow(countQuery, params...).Scan(&total)
+
+	rows, err := db.Query("SELECT * FROM leads "+where+" ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+		append(params, limit, offset)...)
 	if err != nil {
-		return nil, err
+		return PaginatedLeads{}, err
 	}
 	defer rows.Close()
-	return scanLeads(rows)
+	data, err := scanLeads(rows)
+	if err != nil {
+		return PaginatedLeads{}, err
+	}
+	if data == nil {
+		data = []Lead{}
+	}
+	return PaginatedLeads{Data: data, Total: total, Page: page, Limit: limit}, nil
 }
 
 func GetLead(id string) (*Lead, error) {
