@@ -528,6 +528,11 @@ func cmdServe() {
 	app := fiber.New(fiber.Config{AppName: "WaterParty CRM API"})
 	app.Use(cors.New())
 	app.Use(logger.New())
+
+	app.Static("/", "./web/build", fiber.Static{
+		Index: "index.html",
+	})
+
 	api := app.Group("/api")
 
 	api.Get("/stats", func(c *fiber.Ctx) error {
@@ -689,8 +694,17 @@ func cmdServe() {
 		return c.JSON(due)
 	})
 
+	app.Use(func(c *fiber.Ctx) error {
+		path := c.Path()
+		if len(path) < 4 || path[:4] != "/api" {
+			c.Set("Content-Type", "text/html; charset=utf-8")
+			return c.SendFile("./web/build/index.html")
+		}
+		return c.Next()
+	})
+
 	port := ":8080"
-	fmt.Printf("WaterParty CRM API running on http://0.0.0.0%s\n", port)
+	fmt.Printf("WaterParty CRM API running on http://localhost%s\n", port)
 	if err := app.Listen(port); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)

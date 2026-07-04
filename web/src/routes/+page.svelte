@@ -1,37 +1,228 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Stats } from '$lib/api';
-  import { getStats } from '$lib/api';
+  import { activeTab } from '$lib/store';
+  import { getStats, getLeads, getLead, getOutreach, deleteLead, updateLeadStatus, logOutreach, tiers, statusColor } from '$lib/api';
   import StatsGrid from '$lib/components/StatsGrid.svelte';
+  import type { Stats, Lead, OutreachEntry } from '$lib/api';
+
+  $: tab = $activeTab;
 
   let stats: Stats | null = null;
-  let error: string | null = null;
-  let loading = true;
+  let statsError: string | null = null;
+  let statsLoading = true;
+
+  let leads: Lead[] = [];
+  let leadsError: string | null = null;
+  let leadsLoading = true;
+  let search = '';
+  let statusFilter = '';
+  let tierFilter = '';
+
+  let selectedLead: Lead | null = null;
+  let outreach: OutreachEntry[] = [];
+  let outreachLoading = false;
+
+  let newActivityType = 'email';
+  let newNotes = '';
+  let newOutcome = '';
+
+  const statuses = ['cold', 'contacted', 'replied', 'meeting', 'negotiating', 'closed_won', 'closed_lost'];
+  const activityTypes = ['email', 'call', 'meeting', 'note'];
+  const filterStatuses = ['', 'cold', 'contacted', 'replied', 'meeting', 'negotiating', 'closed_won', 'closed_lost'];
+  const tierOptions = ['', '1', '2', '3', '4', '5', '6'];
 
   onMount(async () => {
-    try {
-      stats = await getStats();
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load stats';
-    } finally {
-      loading = false;
-    }
+    try { stats = await getStats(); } catch (e) { statsError = 'Failed to load stats'; }
+    finally { statsLoading = false; }
+
+    await loadLeads();
   });
+
+  async function loadLeads() {
+    leadsLoading = true;
+    leadsError = null;
+    try {
+      const filters: Record<string, string> = {};
+      if (search) filters.search = search;
+      if (statusFilter) filters.status = statusFilter;
+      if (tierFilter) filters.tier = tierFilter;
+      leads = await getLeads(filters);
+    } catch (e) { leadsError = 'Failed to load leads'; }
+    finally { leadsLoading = false; }
+  }
+
+  async function viewLead(id: string) {
+    try {
+      const [l, o] = await Promise.all([getLead(id), getOutreach(id)]);
+      selectedLead = l;
+      outreach = o;
+    } catch (e) { alert('Failed to load lead'); }
+  }
+
+  function backToList() {
+    selectedLead = null;
+    outreach = [];
+  }
+
+  async function changeStatus(status: string) {
+    if (!selectedLead) return;
+    try {
+      await updateLeadStatus(selectedLead.id, status);
+      selectedLead.status = status;
+    } catch (e) { alert('Failed to update status'); }
+  }
+
+  async function submitActivity() {
+    if (!selectedLead || !newNotes) return;
+    try {
+      await logOutreach(selectedLead.id, newActivityType, newNotes, newOutcome);
+      outreach = await getOutreach(selectedLead.id);
+      newNotes = '';
+      newOutcome = '';
+    } catch (e) { alert('Failed to log activity'); }
+  }
+
+  async function removeLead() {
+    if (!selectedLead || !confirm(`Delete ${selectedLead.company}?`)) return;
+    try {
+      await deleteLead(selectedLead.id);
+      selectedLead = null;
+      outreach = [];
+      loadLeads();
+    } catch (e) { alert('Failed to delete'); }
+  }
 </script>
 
-<div class="max-w-6xl mx-auto">
+<div class="max-w-6xl mx-auto" style="display: {tab === 'dashboard' ? 'block' : 'none'}">
   <div class="flex justify-between items-center mb-6">
     <h2 class="text-2xl font-bold">Dashboard</h2>
-    {#if !loading && !error}
-      <a href="/leads" class="btn variant-filled-primary">View All Leads</a>
-    {/if}
   </div>
 
-  {#if loading}
+  {#if statsLoading}
     <div class="text-center py-12"><div class="spinner size-12 mx-auto"></div><p class="mt-3 text-surface-500">Loading dashboard...</p></div>
-  {:else if error}
-    <div class="alert variant-filled-error"><p>{error}</p><p class="text-sm mt-1">Make sure <code class="inline-code">crm serve</code> is running on port 8080.</p></div>
+  {:else if statsError}
+    <div class="alert variant-filled-error"><p>{statsError}</p></div>
   {:else if stats}
     <StatsGrid {stats} />
+  {/if}
+</div>
+
+<div class="max-w-6xl mx-auto" style="display: {tab === 'leads' ? 'block' : 'none'}">
+  {#if selectedLead}
+    <button class="btn variant-ghost-surface mb-4" on:click={backToList}>&larr; Back to Leads</button>
+
+    <div class="card p-6 mb-6">
+      <div class="flex justify-between items-start">
+        <div>
+          <h2 class="text-2xl font-bold">{selectedLead.company}</h2>
+          <p class="text-surface-500 mt-1">{selectedLead.contact_name || 'No contact'} &middot; {selectedLead.email || 'No email'}</p>
+        </div>
+        <button class="btn variant-ghost-error" on:click={removeLead}>Delete</button>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+        <div><div class="text-xs text-surface-500">Tier</div><div class="font-medium">{tiers[selectedLead.tier] || selectedLead.tier}</div></div>
+        <div><div class="text-xs text-surface-500">Type</div><div class="font-medium">{selectedLead.type || '-'}</div></div>
+        <div><div class="text-xs text-surface-500">Vertical</div><div class="font-medium">{selectedLead.vertical || '-'}</div></div>
+        <div><div class="text-xs text-surface-500">Check Size</div><div class="font-medium">{selectedLead.check_size || '-'}</div></div>
+        <div><div class="text-xs text-surface-500">Phone</div><div class="font-medium">{selectedLead.phone || '-'}</div></div>
+        <div><div class="text-xs text-surface-500">Website</div><div class="font-medium">{selectedLead.website || '-'}</div></div>
+        <div><div class="text-xs text-surface-500">Source</div><div class="font-medium">{selectedLead.source || '-'}</div></div>
+        <div><div class="text-xs text-surface-500">Pitch</div><div class="font-medium">{selectedLead.pitch_angle || '-'}</div></div>
+      </div>
+      {#if selectedLead.notes}
+        <div class="mt-4"><div class="text-xs text-surface-500">Notes</div><div class="mt-1 p-3 bg-surface-200 dark:bg-surface-800 rounded">{selectedLead.notes}</div></div>
+      {/if}
+      {#if selectedLead.next_action}
+        <div class="mt-4 flex items-center gap-2"><span class="badge variant-filled-warning">Next: {selectedLead.next_action}{#if selectedLead.next_action_date} (due {selectedLead.next_action_date}){/if}</span></div>
+      {/if}
+    </div>
+
+    <div class="card p-6 mb-6">
+      <h3 class="font-bold mb-3">Status</h3>
+      <div class="flex flex-wrap gap-2">
+        {#each statuses as s}
+          <button class="badge {s === selectedLead.status ? statusColor(s) : 'variant-filled-surface'}" on:click={() => changeStatus(s)}>{s.replace('_', ' ')}</button>
+        {/each}
+      </div>
+    </div>
+
+    <div class="card p-6 mb-6">
+      <h3 class="font-bold mb-3">Log Activity</h3>
+      <div class="flex flex-wrap gap-2 mb-3">
+        {#each activityTypes as t}
+          <button class="btn {newActivityType === t ? 'variant-filled-primary' : 'variant-ghost-surface'} btn-sm" on:click={() => newActivityType = t}>{t}</button>
+        {/each}
+      </div>
+      <textarea class="input w-full mb-2" rows="2" placeholder="Notes..." bind:value={newNotes}></textarea>
+      <input class="input w-full mb-2" type="text" placeholder="Outcome (optional)" bind:value={newOutcome} />
+      <button class="btn variant-filled-primary" on:click={submitActivity} disabled={!newNotes}>Log Activity</button>
+    </div>
+
+    <div class="card p-6">
+      <h3 class="font-bold mb-3">Activity Log ({outreach.length})</h3>
+      {#if outreach.length === 0}
+        <p class="text-surface-500">No activity logged yet.</p>
+      {:else}
+        <div class="space-y-3">
+          {#each outreach as entry}
+            <div class="p-3 bg-surface-200 dark:bg-surface-800 rounded">
+              <div class="flex justify-between text-sm">
+                <span class="badge variant-filled-surface">{entry.activity_type}</span>
+                <span class="text-xs text-surface-500">{entry.created_at}</span>
+              </div>
+              {#if entry.notes}<p class="mt-1">{entry.notes}</p>{/if}
+              {#if entry.outcome}<p class="mt-1 text-sm text-surface-500">Outcome: {entry.outcome}</p>{/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-2xl font-bold">Leads ({leads.length})</h2>
+    </div>
+    <div class="card p-4 mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <input class="input" type="text" placeholder="Search company, contact, email..." bind:value={search} />
+        <select class="select" bind:value={statusFilter}>
+          <option value="">All Statuses</option>
+          {#each filterStatuses.slice(1) as s}<option value={s}>{s.replace('_', ' ')}</option>{/each}
+        </select>
+        <select class="select" bind:value={tierFilter}>
+          <option value="">All Tiers</option>
+          {#each tierOptions.slice(1) as t}<option value={t}>{tiers[t]}</option>{/each}
+        </select>
+        <button class="btn variant-filled-primary" on:click={loadLeads}>Filter</button>
+      </div>
+    </div>
+    {#if leadsLoading}
+      <div class="text-center py-12"><div class="spinner size-10 mx-auto"></div></div>
+    {:else if leadsError}
+      <div class="alert variant-filled-error">{leadsError}</div>
+    {:else if leads.length === 0}
+      <div class="card p-8 text-center text-surface-500">No leads found.</div>
+    {:else}
+      <div class="card overflow-x-auto">
+        <table class="table w-full">
+          <thead>
+            <tr>
+              <th>Company</th><th>Contact</th><th>Tier</th><th>Type</th><th>Status</th><th>Next Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each leads as lead}
+              <tr class="cursor-pointer hover:bg-surface-200 dark:hover:bg-surface-800" on:click={() => viewLead(lead.id)}>
+                <td class="font-medium">{lead.company}</td>
+                <td><div>{lead.contact_name || '-'}</div><div class="text-xs text-surface-500">{lead.email || ''}</div></td>
+                <td>{tiers[lead.tier] || lead.tier}</td>
+                <td>{lead.type || '-'}</td>
+                <td><span class="badge {statusColor(lead.status)}">{lead.status.replace('_', ' ')}</span></td>
+                <td class="text-sm">{#if lead.next_action}<div>{lead.next_action}</div>{#if lead.next_action_date}<div class="text-xs text-surface-500">{lead.next_action_date}</div>{/if}{:else}<span class="text-surface-400">-</span>{/if}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
   {/if}
 </div>

@@ -1,6 +1,6 @@
 # Water Enterprises — Marketing & Investor Suite
 
-Marketing operations, lead management CRM, and investor materials for **WaterParty** — the social discovery platform for nightlife and events.
+Marketing operations, lead management CRM, for investor, sponsors, etc...
 
 ## Repo Structure
 
