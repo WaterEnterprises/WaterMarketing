@@ -20,7 +20,8 @@
   let tierFilter = '';
   let typeFilter = '';
   let currentPage = 1;
-  const limit = 50;
+  let pageSize = 50;
+  const pageSizes = [20, 60, 300];
 
   let selectedIds = new Set<string>();
   let selectAll = false;
@@ -58,11 +59,17 @@
     await loadLeads();
   });
 
+  function changePageSize(size: number) {
+    pageSize = size;
+    currentPage = 1;
+    loadLeads();
+  }
+
   async function loadLeads() {
     leadsLoading = true;
     leadsError = null;
     try {
-      const filters: Record<string, string> = { page: String(currentPage), limit: String(limit) };
+      const filters: Record<string, string> = { page: String(currentPage), limit: String(pageSize) };
       if (search) filters.search = search;
       if (statusFilter) filters.status = statusFilter;
       if (tierFilter) filters.tier = tierFilter;
@@ -82,7 +89,7 @@
   }
 
   function totalPages(): number {
-    return Math.max(1, Math.ceil(paginatedLeads.total / limit));
+    return Math.max(1, Math.ceil(paginatedLeads.total / pageSize));
   }
 
   function toggleSelectAll() {
@@ -334,7 +341,14 @@
       </div>
 
       <div class="flex justify-between items-center mt-4">
-        <span class="text-sm text-surface-500">Page {paginatedLeads.page} of {totalPages()} ({paginatedLeads.total} total)</span>
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-surface-500">Page {paginatedLeads.page} of {totalPages()} ({paginatedLeads.total} total)</span>
+          <span class="text-sm text-surface-400">|</span>
+          <span class="text-sm text-surface-500">Show:</span>
+          {#each pageSizes as s}
+            <button class="btn btn-sm {s === pageSize ? 'variant-filled-primary' : 'variant-ghost-surface'}" on:click={() => changePageSize(s)}>{s}</button>
+          {/each}
+        </div>
         <div class="flex gap-1">
           <button class="btn variant-ghost-surface btn-sm" disabled={currentPage <= 1} on:click={() => goPage(currentPage - 1)}>Prev</button>
           {#each Array(Math.min(totalPages(), 10)) as _, i}
